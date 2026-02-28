@@ -50,8 +50,9 @@ jobs:
             source .build_venv/bin/activate
           fi
 
-          pip install --upgrade pip pyinstaller --quiet
-          pip install -r requirements-bundle.txt --quiet
+          python -m pip install --upgrade pip --quiet
+          python -m pip install pyinstaller --quiet
+          python -m pip install -r requirements-bundle.txt --quiet
 
           pyinstaller pagenode.spec \
             --distpath dist \
