@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            rust-target: x86_64-unknown-linux-gnu
+            bundles: deb,appimage
+          - platform: macos-13
+            rust-target: x86_64-apple-darwin
+            bundles: dmg
+          - platform: macos-14
+            rust-target: aarch64-apple-darwin
+            bundles: dmg
+          - platform: windows-latest
+            rust-target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ---- Python backend (PyInstaller) ----
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build Python backend sidecar
+        shell: bash
+        run: |
+          cd backend
+          python -m venv .build_venv
+
+          # Activate venv (cross-platform)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            source .build_venv/Scripts/activate
+          else
+            source .build_venv/bin/activate
+          fi
+
+          pip install --upgrade pip pyinstaller --quiet
+          pip install -r requirements-bundle.txt --quiet
+
+          pyinstaller pagenode.spec \
+            --distpath dist \
+            --workpath build_tmp \
+            --noconfirm
+
+          mkdir -p ../src-tauri/binaries
+
+          EXT=""
+          [ "$RUNNER_OS" = "Windows" ] && EXT=".exe"
+
+          cp "dist/pagenode-backend${EXT}" \
+             "../src-tauri/binaries/pagenode-backend-${{ matrix.rust-target }}${EXT}"
+
+          echo "Binary: $(ls -lh ../src-tauri/binaries/)"
+
+      # ---- Node / Frontend ----
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      # ---- Rust ----
+
+      - name: Setup Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # ---- Linux system dependencies ----
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libglib2.0-dev
+
+      # ---- Tauri build + GitHub Release ----
+
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'PageNode ${{ github.ref_name }}'
+          releaseBody: |
+            ## Installation
+
+            | Platform | Package |
+            |----------|---------|
+            | **Linux (Ubuntu/Debian)** | `.deb` installer |
+            | **Linux (portable)** | `.AppImage` |
+            | **macOS** | `.dmg` |
+            | **Windows** | `.msi` or `.exe` setup |
+
+            > **macOS / Windows**: You may need to allow the app through Gatekeeper or SmartScreen on first launch.
+
+            ## What's new
+            See [CHANGELOG](https://github.com/OWNER/REPO/blob/main/CHANGELOG.md) for details.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.rust-target }} --bundles ${{ matrix.bundles }}
