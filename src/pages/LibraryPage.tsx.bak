@@ -1,0 +1,232 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { apiFetch } from "../api";
+
+interface DocumentItem {
+  id: string;
+  title: string;
+  author: string;
+  file_type: string;
+  file_size: number;
+  page_count: number;
+  status: string;
+  created_at: string;
+}
+
+interface DocumentList {
+  items: DocumentItem[];
+  total: number;
+}
+
+interface LibraryPageProps {
+  health: "loading" | "ok" | "error";
+}
+
+export default function LibraryPage({ health }: LibraryPageProps) {
+  const [documents, setDocuments] = useState<DocumentItem[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchDocs = useCallback(async () => {
+    try {
+      const res = await apiFetch("/documents/?limit=100");
+      const data: DocumentList = await res.json();
+      setDocuments(data.items);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (health === "ok") fetchDocs();
+  }, [health, fetchDocs]);
+
+  // Poll for status updates while any document is processing
+  useEffect(() => {
+    const hasProcessing = documents.some((d) =>
+      ["pending", "extracting", "chunking", "embedding"].includes(d.status),
+    );
+    if (!hasProcessing) return;
+    const interval = setInterval(fetchDocs, 2000);
+    return () => clearInterval(interval);
+  }, [documents, fetchDocs]);
+
+  const handleUpload = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      alert("Only PDF files are supported");
+      return;
+    }
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res = await apiFetch("/documents/upload", { method: "POST", body: form });
+      if (res.status === 409) {
+        alert("This file has already been uploaded");
+      } else if (!res.ok) {
+        const err = await res.json();
+        alert(err.detail || "Upload failed");
+      }
+      await fetchDocs();
+    } catch {
+      alert("Upload failed — is the backend running?");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file) handleUpload(file);
+  };
+
+  const handleDelete = async (docId: string) => {
+    await apiFetch(`/documents/${docId}`, { method: "DELETE" });
+    await fetchDocs();
+  };
+
+  return (
+    <main style={s.main}>
+      <div
+        style={{
+          ...s.dropZone,
+          borderColor: dragOver ? "#396cd8" : "rgba(0,0,0,0.15)",
+          background: dragOver ? "#f0f4ff" : "#fdfbf7",
+        }}
+        onDrop={onDrop}
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+        onDragLeave={() => setDragOver(false)}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleUpload(file);
+            e.target.value = "";
+          }}
+        />
+        <span style={s.dropIcon}>{uploading ? "..." : "+"}</span>
+        <span style={s.dropText}>
+          {uploading ? "Uploading..." : "Drop a PDF here or click to upload"}
+        </span>
+      </div>
+
+      {documents.length === 0 && health === "ok" && (
+        <p style={s.emptyText}>No documents yet. Upload a PDF to get started.</p>
+      )}
+
+      {documents.length > 0 && (
+        <div style={s.docList}>
+          {documents.map((doc) => (
+            <div key={doc.id} style={s.docCard}>
+              <div style={s.docInfo}>
+                <span style={s.docTitle}>{doc.title}</span>
+                {doc.author && <span style={s.docAuthor}>{doc.author}</span>}
+                <span style={s.docMeta}>
+                  {doc.file_type.toUpperCase()}
+                  {doc.page_count > 0 && ` · ${doc.page_count} pages`}
+                  {` · ${formatSize(doc.file_size)}`}
+                </span>
+              </div>
+              <div style={s.docActions}>
+                <span style={statusStyle(doc.status)}>{doc.status}</span>
+                <button style={s.deleteBtn} onClick={() => handleDelete(doc.id)} title="Delete">
+                  x
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </main>
+  );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function statusStyle(status: string): React.CSSProperties {
+  const colors: Record<string, { bg: string; fg: string }> = {
+    pending: { bg: "#e8e8e8", fg: "#5e5e5e" },
+    extracting: { bg: "#fff3cd", fg: "#856404" },
+    chunking: { bg: "#fff3cd", fg: "#856404" },
+    embedding: { bg: "#fff3cd", fg: "#856404" },
+    ready: { bg: "#d4edda", fg: "#155724" },
+    needs_ocr: { bg: "#fff0d0", fg: "#7a5500" },
+    error: { bg: "#f8d7da", fg: "#721c24" },
+  };
+  const c = colors[status] || colors.pending;
+  return {
+    fontSize: "11px",
+    fontWeight: 600,
+    padding: "2px 8px",
+    borderRadius: "4px",
+    background: c.bg,
+    color: c.fg,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    whiteSpace: "nowrap",
+  };
+}
+
+const s: Record<string, React.CSSProperties> = {
+  main: { flex: 1, padding: "24px", maxWidth: "720px", width: "100%", margin: "0 auto" },
+  dropZone: {
+    border: "2px dashed rgba(0,0,0,0.15)",
+    borderRadius: "8px",
+    padding: "32px",
+    textAlign: "center",
+    cursor: "pointer",
+    transition: "all 0.15s",
+    marginBottom: "24px",
+  },
+  dropIcon: { display: "block", fontSize: "28px", color: "#5e5e5e", marginBottom: "8px" },
+  dropText: { fontSize: "13px", color: "#5e5e5e" },
+  emptyText: { textAlign: "center", color: "#999", fontSize: "13px", marginTop: "48px" },
+  docList: { display: "flex", flexDirection: "column", gap: "8px" },
+  docCard: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    background: "#fdfbf7",
+    border: "1px solid rgba(0,0,0,0.08)",
+    borderRadius: "6px",
+    padding: "12px 16px",
+  },
+  docInfo: { display: "flex", flexDirection: "column", gap: "2px", overflow: "hidden" },
+  docTitle: {
+    fontSize: "14px",
+    fontWeight: 600,
+    color: "#2b2b2b",
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+  },
+  docAuthor: { fontSize: "12px", color: "#5e5e5e" },
+  docMeta: { fontSize: "11px", color: "#999", fontFamily: "'JetBrains Mono', monospace" },
+  docActions: { display: "flex", alignItems: "center", gap: "10px", flexShrink: 0 },
+  deleteBtn: {
+    background: "none",
+    border: "1px solid rgba(0,0,0,0.1)",
+    borderRadius: "4px",
+    width: "24px",
+    height: "24px",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "12px",
+    color: "#999",
+    padding: 0,
+    boxShadow: "none",
+  },
+};

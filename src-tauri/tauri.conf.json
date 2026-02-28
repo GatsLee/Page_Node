@@ -41,7 +41,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDNDVGMUFCNDhDQzI0OTMKUldTVEpNeElxL0ZGN0JtaHpubzVkdzhnM044NjUyT2VoS3g0UGdQWS9kZVd5Wi9scWQ4SGVkREwK",
       "endpoints": [
-        "https://github.com/OWNER/REPO/releases/latest/download/latest.json"
+        "https://github.com/GatsLee/PageNode/releases/latest/download/latest.json"
       ]
     }
   }
